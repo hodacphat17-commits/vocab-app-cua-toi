@@ -140,14 +140,18 @@ const ApiService = {
             this.applyMock(word, result);
             return result;
         }
-        try {
-            const rand = Math.random();
-            let fmt;
-            if (rand < 0.2) fmt = "ALL common Vietnamese translations separated by comma (e.g. đặt hàng, ra lệnh)";
-            else if (rand < 0.6) fmt = "ALL common Vietnamese translations - A clear English definition/explanation";
-            else fmt = "ALL common Vietnamese translations - Synonyms: 1-2 English synonyms";
+        let retries = 3;
+        let delay = 1000; // start with 1 second delay
 
-            const prompt = `You are an expert English teacher. Analyze the word "${word}".
+        while (retries > 0) {
+            try {
+                const rand = Math.random();
+                let fmt;
+                if (rand < 0.2) fmt = "ALL common Vietnamese translations separated by comma (e.g. đặt hàng, ra lệnh)";
+                else if (rand < 0.6) fmt = "ALL common Vietnamese translations - A clear English definition/explanation";
+                else fmt = "ALL common Vietnamese translations - Synonyms: 1-2 English synonyms";
+
+                const prompt = `You are an expert English teacher. Analyze the word "${word}".
 Return ONLY a valid JSON object:
 {
   "isCorrectSpelling": boolean,
@@ -158,41 +162,60 @@ Return ONLY a valid JSON object:
   "distractors": ["string","string","string"] (3 wrong answers in the EXACT same format as translation),
   "contextSentence": "string (a natural English sentence using the corrected word)"
 }`;
-            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${settings.geminiApiKey.trim()}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{ parts: [{ text: prompt }] }],
-                    generationConfig: { response_mime_type: 'application/json' }
-                })
-            });
-            if (!res.ok) {
-                const errText = await res.text();
-                throw new Error(`HTTP ${res.status}: ${errText}`);
+                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${settings.geminiApiKey.trim()}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }] }],
+                        generationConfig: { response_mime_type: 'application/json' }
+                    })
+                });
+                
+                if (!res.ok) {
+                    const errText = await res.text();
+                    if (res.status === 429) {
+                        throw new Error(`HTTP 429: Too Many Requests`);
+                    }
+                    throw new Error(`HTTP ${res.status}: ${errText}`);
+                }
+                
+                const aiData = await res.json();
+                const parsed = JSON.parse(aiData.candidates[0].content.parts[0].text);
+
+                if (parsed.isCorrectSpelling === false && parsed.correctedWord) {
+                    setTimeout(() => alert(`⚠️ Từ "${word}" có vẻ sai chính tả. Đã sửa thành "${parsed.correctedWord}".`), 100);
+                }
+
+                const cleanStr = (val) => {
+                    if (!val) return '';
+                    let str = Array.isArray(val) ? val.join(', ') : String(val);
+                    return str.replace(/[\[\]]/g, '').replace(/^["']|["']$/g, '').trim();
+                };
+
+                result.term = parsed.correctedWord || word;
+                result.partOfSpeech = parsed.partOfSpeech || '';
+                result.ipa = parsed.ipa || '';
+                result.translation = cleanStr(parsed.translation);
+                result.distractors = (parsed.distractors || []).map(cleanStr);
+                result.contextSentence = cleanStr(parsed.contextSentence);
+                
+                return result; // Success! Break out of the loop.
+                
+            } catch(e) {
+                console.warn(`Attempt failed: ${e.message}`);
+                if (e.message.includes('429') && retries > 1) {
+                    retries--;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    delay *= 2; // Exponential backoff (1s, 2s, 4s...)
+                    continue; // Retry
+                }
+                
+                // If out of retries or not a 429 error, fall back to mock data
+                console.error('Gemini API error:', e);
+                alert(`⚠️ Lỗi AI (${e.message}). Đã tạm thời dùng dữ liệu mẫu.`);
+                this.applyMock(word, result);
+                break;
             }
-            const aiData = await res.json();
-            const parsed = JSON.parse(aiData.candidates[0].content.parts[0].text);
-
-            if (parsed.isCorrectSpelling === false && parsed.correctedWord) {
-                setTimeout(() => alert(`⚠️ Từ "${word}" có vẻ sai chính tả. Đã sửa thành "${parsed.correctedWord}".`), 100);
-            }
-
-            const cleanStr = (val) => {
-                if (!val) return '';
-                let str = Array.isArray(val) ? val.join(', ') : String(val);
-                return str.replace(/[\[\]]/g, '').replace(/^["']|["']$/g, '').trim();
-            };
-
-            result.term = parsed.correctedWord || word;
-            result.partOfSpeech = parsed.partOfSpeech || '';
-            result.ipa = parsed.ipa || '';
-            result.translation = cleanStr(parsed.translation);
-            result.distractors = (parsed.distractors || []).map(cleanStr);
-            result.contextSentence = cleanStr(parsed.contextSentence);
-        } catch(e) {
-            console.error('Gemini API error:', e);
-            alert(`⚠️ Lỗi AI (${e.message}). Đã tạm thời dùng dữ liệu mẫu.`);
-            this.applyMock(word, result);
         }
         return result;
     },
