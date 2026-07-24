@@ -1,5 +1,19 @@
 const { useState, useEffect, useCallback, useRef } = React;
 
+// ===== FIREBASE REALTIME DATABASE FUNCTIONS =====
+const getDatabase = (app) => (app ? app.database() : firebase.database());
+const ref = (db, path) => db.ref(path);
+const set = (r, val) => r.set(val);
+const onValue = (r, callback) => {
+    const handler = (snapshot) => callback(snapshot);
+    r.on('value', handler);
+    return () => r.off('value', handler);
+};
+const push = (r, val) => {
+    if (val !== undefined) return r.push(val);
+    return r.push();
+};
+
 // ===== ICONS =====
 const IconBook     = () => <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>;
 const IconPlay     = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>;
@@ -63,18 +77,20 @@ const FirebaseService = {
     },
 
     init(settings) {
-        if (this._initialized) return true;
+        if (this._initialized && this._db) return true;
         if (!this.isConfigured(settings)) return false;
         if (typeof firebase === 'undefined') return false;
         try {
+            const dbUrl = settings.fbDatabaseUrl?.trim() || `https://${settings.fbProjectId}-default-rtdb.firebaseio.com`;
             const config = {
                 apiKey: settings.fbApiKey,
                 authDomain: `${settings.fbProjectId}.firebaseapp.com`,
+                databaseURL: dbUrl,
                 projectId: settings.fbProjectId,
                 appId: settings.fbAppId,
             };
             if (!firebase.apps.length) firebase.initializeApp(config);
-            this._db = firebase.firestore();
+            this._db = getDatabase();
             this._auth = firebase.auth();
             this._initialized = true;
             return true;
@@ -82,6 +98,10 @@ const FirebaseService = {
             console.error('Firebase init error:', e);
             return false;
         }
+    },
+
+    getDb() {
+        return this._db;
     },
 
     reset() {
@@ -109,17 +129,6 @@ const FirebaseService = {
     onAuthStateChanged(callback) {
         if (!this._auth) return () => {};
         return this._auth.onAuthStateChanged(callback);
-    },
-
-    async saveUserData(uid, data) {
-        if (!this._db) return;
-        await this._db.collection('users').doc(uid).set(data, { merge: true });
-    },
-
-    async loadUserData(uid) {
-        if (!this._db) return null;
-        const doc = await this._db.collection('users').doc(uid).get();
-        return doc.exists ? doc.data() : null;
     }
 };
 
@@ -195,8 +204,8 @@ Return ONLY a valid JSON object:
 };
 
 // ===== ANALYTICS HELPERS =====
-const computeStreak = (sessionLogs) => {
-    if (!sessionLogs.length) return 0;
+const computeStreak = (sessionLogs = []) => {
+    if (!sessionLogs || !sessionLogs.length) return 0;
     const days = [...new Set(sessionLogs.map(l => new Date(l.date).toDateString()))].sort((a,b) => new Date(b)-new Date(a));
     let streak = 0;
     let check = new Date(); check.setHours(0,0,0,0);
@@ -209,9 +218,9 @@ const computeStreak = (sessionLogs) => {
     return streak;
 };
 
-const computeWeakWords = (sessionLogs) => {
+const computeWeakWords = (sessionLogs = []) => {
     const counts = {};
-    sessionLogs.forEach(log => {
+    (sessionLogs || []).forEach(log => {
         (log.results || []).forEach(r => {
             if (!r.isCorrect) counts[r.word] = (counts[r.word] || 0) + 1;
         });
@@ -219,8 +228,8 @@ const computeWeakWords = (sessionLogs) => {
     return Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([word,n])=>({word,count:n}));
 };
 
-const computeOverallAccuracy = (sessionLogs) => {
-    if (!sessionLogs.length) return 0;
+const computeOverallAccuracy = (sessionLogs = []) => {
+    if (!sessionLogs || !sessionLogs.length) return 0;
     const totals = sessionLogs.reduce((acc, l) => ({ score: acc.score + l.score, total: acc.total + l.total }), { score:0, total:0 });
     return totals.total ? Math.round((totals.score / totals.total) * 100) : 0;
 };
@@ -313,10 +322,10 @@ const BottomNav = ({ currentView, navigate, openTodayDeck }) => {
 // ===== DASHBOARD VIEW =====
 const DashboardView = ({ decks, navigate, openTodayDeck, createCustomDeck, deleteDeck }) => {
     const today = new Date().toDateString();
-    const unplayed = decks.filter(d => {
+    const unplayed = (decks || []).filter(d => {
         const createdToday = new Date(d.dateCreated).toDateString() === today;
         const playedToday = d.lastPlayedDate && new Date(d.lastPlayedDate).toDateString() === today;
-        return createdToday && !playedToday && d.words.length > 0;
+        return createdToday && !playedToday && d.words && d.words.length > 0;
     });
 
     return (
@@ -342,7 +351,7 @@ const DashboardView = ({ decks, navigate, openTodayDeck, createCustomDeck, delet
             <div className="p-4 space-y-4">
                 <div className="bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 rounded-3xl p-6 text-white shadow-xl">
                     <div className="flex items-center gap-2 mb-1"><span className="text-2xl">🎓</span><h2 className="text-2xl font-black">Xin chào!</h2></div>
-                    <p className="opacity-90 text-sm mb-5">Bạn có <strong>{decks.length}</strong> thẻ • <strong>{decks.reduce((a,d)=>a+d.words.length,0)}</strong> từ vựng</p>
+                    <p className="opacity-90 text-sm mb-5">Bạn có <strong>{(decks || []).length}</strong> thẻ • <strong>{(decks || []).reduce((a,d)=>a+(d.words?d.words.length:0),0)}</strong> từ vựng</p>
                     <div className="flex gap-2">
                         <button onClick={openTodayDeck} className="flex-1 flex items-center justify-center gap-1.5 bg-white/20 backdrop-blur rounded-xl py-3 font-bold text-sm hover:bg-white/30 transition-colors">
                             <span>📅</span> Hôm nay
@@ -355,10 +364,10 @@ const DashboardView = ({ decks, navigate, openTodayDeck, createCustomDeck, delet
 
                 <div className="flex items-center justify-between">
                     <h3 className="font-bold text-gray-700 text-base">Tất cả thẻ</h3>
-                    <span className="text-xs text-gray-400">{decks.length} thẻ</span>
+                    <span className="text-xs text-gray-400">{(decks || []).length} thẻ</span>
                 </div>
 
-                {decks.length === 0 ? (
+                {(!decks || decks.length === 0) ? (
                     <div className="text-center py-16 text-gray-400 bg-white rounded-3xl border-2 border-dashed border-gray-200">
                         <div className="text-5xl mb-3">📚</div>
                         <p className="font-semibold">Chưa có thẻ nào</p>
@@ -367,6 +376,7 @@ const DashboardView = ({ decks, navigate, openTodayDeck, createCustomDeck, delet
                 ) : (
                     <div className="space-y-3">
                         {decks.map(deck => {
+                            const wordCount = deck.words ? deck.words.length : 0;
                             const isPlayedToday = deck.lastPlayedDate && new Date(deck.lastPlayedDate).toDateString() === today;
                             return (
                                 <div key={deck.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden animate-fade-in">
@@ -377,7 +387,7 @@ const DashboardView = ({ decks, navigate, openTodayDeck, createCustomDeck, delet
                                         <div className="flex-1 min-w-0 cursor-pointer" onClick={() => navigate('editor', { deckId: deck.id })}>
                                             <h4 className="font-bold text-gray-800 truncate">{deck.title}</h4>
                                             <div className="flex items-center gap-2 mt-0.5">
-                                                <span className="text-xs text-gray-500">{deck.words.length} từ</span>
+                                                <span className="text-xs text-gray-500">{wordCount} từ</span>
                                                 <span className="text-gray-300">•</span>
                                                 <span className="text-xs text-gray-500">{new Date(deck.dateCreated).toLocaleDateString('vi-VN')}</span>
                                                 {isPlayedToday && <span className="text-xs text-green-600 font-medium">✓ Đã ôn</span>}
@@ -385,9 +395,9 @@ const DashboardView = ({ decks, navigate, openTodayDeck, createCustomDeck, delet
                                         </div>
                                         <div className="flex items-center gap-2 flex-shrink-0">
                                             <button onClick={() => deleteDeck(deck.id)} className="p-2 text-gray-300 hover:text-red-400 rounded-full transition-colors"><IconTrash /></button>
-                                            <button onClick={() => navigate('quiz', { deckId: deck.id })} disabled={deck.words.length === 0}
-                                                className={`px-4 py-2 rounded-xl font-bold text-sm transition-colors ${deck.words.length>0 ? 'bg-kahoot-green text-white hover:bg-green-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}>
-                                                {deck.words.length > 0 ? '▶ Play' : 'Thêm từ'}
+                                            <button onClick={() => navigate('quiz', { deckId: deck.id })} disabled={wordCount === 0}
+                                                className={`px-4 py-2 rounded-xl font-bold text-sm transition-colors ${wordCount > 0 ? 'bg-kahoot-green text-white hover:bg-green-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}>
+                                                {wordCount > 0 ? '▶ Play' : 'Thêm từ'}
                                             </button>
                                         </div>
                                     </div>
@@ -403,13 +413,14 @@ const DashboardView = ({ decks, navigate, openTodayDeck, createCustomDeck, delet
 
 // ===== DECK EDITOR VIEW =====
 const DeckEditorView = ({ deckId, decks, updateDeck, navigate, settings }) => {
-    const deck = decks.find(d => d.id === deckId);
+    const deck = (decks || []).find(d => d.id === deckId);
     const [newWord, setNewWord] = useState('');
     const [loading, setLoading] = useState(false);
     const [noKey, setNoKey] = useState(false);
     const inputRef = useRef(null);
 
     if (!deck) return <div className="p-8 text-center text-gray-500">Không tìm thấy thẻ.</div>;
+    const words = deck.words || [];
 
     const handleAdd = async (e) => {
         e.preventDefault();
@@ -419,14 +430,14 @@ const DeckEditorView = ({ deckId, decks, updateDeck, navigate, settings }) => {
         setLoading(true);
         setNoKey(false);
         const data = await ApiService.enrichWord(trimmed, settings);
-        updateDeck(deckId, { words: [{ id: generateId(), ...data }, ...deck.words] });
+        updateDeck(deckId, { words: [{ id: generateId(), ...data }, ...words] });
         setNewWord('');
         setLoading(false);
         inputRef.current?.focus();
     };
 
     const handleDelete = (wordId) => {
-        if (confirm('Xóa từ này?')) updateDeck(deckId, { words: deck.words.filter(w => w.id !== wordId) });
+        if (confirm('Xóa từ này?')) updateDeck(deckId, { words: words.filter(w => w.id !== wordId) });
     };
 
     return (
@@ -434,7 +445,7 @@ const DeckEditorView = ({ deckId, decks, updateDeck, navigate, settings }) => {
             <Header
                 title="Chỉnh sửa thẻ"
                 leftAction={<button onClick={() => navigate('dashboard')} className="p-1 text-gray-600"><IconBack /></button>}
-                rightAction={deck.words.length > 0 &&
+                rightAction={words.length > 0 &&
                     <button onClick={() => navigate('quiz', { deckId })} className="flex items-center gap-1.5 bg-kahoot-green text-white px-3 py-1.5 rounded-lg font-bold text-sm">
                         <IconPlay /> Play
                     </button>
@@ -448,7 +459,7 @@ const DeckEditorView = ({ deckId, decks, updateDeck, navigate, settings }) => {
                         className="font-black text-lg bg-transparent border-none outline-none w-full text-gray-800 placeholder-gray-300"
                         placeholder="Nhập tên thẻ..." />
                 </div>
-                <p className="text-sm text-gray-500 -mt-2 ml-1">{deck.words.length} từ trong thẻ</p>
+                <p className="text-sm text-gray-500 -mt-2 ml-1">{words.length} từ trong thẻ</p>
 
                 {/* API Key warning */}
                 {noKey && (
@@ -480,7 +491,7 @@ const DeckEditorView = ({ deckId, decks, updateDeck, navigate, settings }) => {
 
                 {/* Word list */}
                 <div className="space-y-3">
-                    {deck.words.map(word => (
+                    {words.map(word => (
                         <div key={word.id} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 animate-slide-up">
                             <div className="flex items-start justify-between mb-2">
                                 <div className="flex items-center gap-2 flex-wrap">
@@ -504,9 +515,9 @@ const DeckEditorView = ({ deckId, decks, updateDeck, navigate, settings }) => {
 
 // ===== QUIZ VIEW =====
 const QuizView = ({ deckId, decks, navigate, updateDeck, onQuizComplete }) => {
-    const deck = decks.find(d => d.id === deckId);
+    const deck = (decks || []).find(d => d.id === deckId);
     const [quizKey, setQuizKey] = useState(0);
-    const [retryWords, setRetryWords] = useState(null); // null = use deck words
+    const [retryWords, setRetryWords] = useState(null);
     const [questions, setQuestions] = useState([]);
     const [currentIndex, setCurrentIndex] = useState(0);
     const [selectedAnswer, setSelectedAnswer] = useState(null);
@@ -514,7 +525,6 @@ const QuizView = ({ deckId, decks, navigate, updateDeck, onQuizComplete }) => {
     const [score, setScore] = useState(0);
     const [results, setResults] = useState([]);
 
-    // Build questions on mount or on quizKey change (for replay)
     useEffect(() => {
         const words = retryWords || deck?.words || [];
         if (words.length > 0) {
@@ -529,7 +539,6 @@ const QuizView = ({ deckId, decks, navigate, updateDeck, onQuizComplete }) => {
 
     const isFinished = questions.length > 0 && currentIndex >= questions.length;
 
-    // On finish: save lastPlayedDate + fire analytics callback
     useEffect(() => {
         if (isFinished) {
             if (updateDeck) updateDeck(deckId, { lastPlayedDate: Date.now() });
@@ -558,7 +567,6 @@ const QuizView = ({ deckId, decks, navigate, updateDeck, onQuizComplete }) => {
         </div>
     );
 
-    // ---- Finished screen ----
     if (isFinished) {
         const accuracy = Math.round((score / questions.length) * 100);
         const incorrectResults = results.filter(r => !r.isCorrect);
@@ -582,7 +590,6 @@ const QuizView = ({ deckId, decks, navigate, updateDeck, onQuizComplete }) => {
                         </div>
                     </div>
 
-                    {/* Results list */}
                     <div className="max-h-48 overflow-y-auto space-y-2 mb-5">
                         {results.map((r, i) => (
                             <div key={i} className={`p-2.5 rounded-xl border-l-4 ${r.isCorrect ? 'border-kahoot-green bg-green-50' : 'border-kahoot-red bg-red-50'}`}>
@@ -600,7 +607,6 @@ const QuizView = ({ deckId, decks, navigate, updateDeck, onQuizComplete }) => {
                         ))}
                     </div>
 
-                    {/* Action buttons */}
                     <div className="space-y-2">
                         {incorrectResults.length > 0 && (
                             <button onClick={() => resetAndPlay(incorrectResults.map(r => r.wordData))}
@@ -622,7 +628,6 @@ const QuizView = ({ deckId, decks, navigate, updateDeck, onQuizComplete }) => {
         );
     }
 
-    // ---- Active quiz ----
     const currentQ = questions[currentIndex];
     const handleAnswer = (optText) => {
         if (selectedAnswer) return;
@@ -648,7 +653,6 @@ const QuizView = ({ deckId, decks, navigate, updateDeck, onQuizComplete }) => {
 
     return (
         <div className="min-h-screen bg-gray-100 flex flex-col">
-            {/* Header */}
             <div className="bg-white shadow-sm z-10 flex-shrink-0">
                 <div className="flex items-center justify-between px-4 h-14">
                     <button onClick={() => navigate('dashboard')} className="text-gray-400 p-1"><IconX /></button>
@@ -657,13 +661,11 @@ const QuizView = ({ deckId, decks, navigate, updateDeck, onQuizComplete }) => {
                     </div>
                     <div className="w-8"></div>
                 </div>
-                {/* Progress bar */}
                 <div className="h-1.5 bg-gray-100">
                     <div className="h-full bg-indigo-500 transition-all duration-500" style={{width:`${progress}%`}}></div>
                 </div>
             </div>
 
-            {/* Question card */}
             <div className="flex-1 flex flex-col items-center justify-center p-4 animate-pop-in" key={`q-${currentIndex}-${quizKey}`}>
                 <div className="bg-white rounded-3xl p-6 shadow-lg w-full max-w-md mb-4">
                     <div className="text-center">
@@ -692,7 +694,6 @@ const QuizView = ({ deckId, decks, navigate, updateDeck, onQuizComplete }) => {
                 </div>
             </div>
 
-            {/* Answer options */}
             <div className="p-4 pb-8 bg-white grid grid-cols-2 gap-3 shadow-[0_-10px_30px_rgba(0,0,0,0.06)] flex-shrink-0">
                 {currentQ.options.map((opt, i) => {
                     let cls = opt.color;
@@ -722,8 +723,8 @@ const AnalyticsView = ({ decks, sessionLogs, navigate }) => {
     const streak = computeStreak(sessionLogs);
     const weakWords = computeWeakWords(sessionLogs);
     const accuracy = computeOverallAccuracy(sessionLogs);
-    const totalWords = decks.reduce((a, d) => a + d.words.length, 0);
-    const recentSessions = [...sessionLogs].sort((a,b)=>b.date-a.date).slice(0,10);
+    const totalWords = (decks || []).reduce((a, d) => a + (d.words ? d.words.length : 0), 0);
+    const recentSessions = [...(sessionLogs || [])].sort((a,b)=>b.date-a.date).slice(0,10);
 
     const StatCard = ({ label, value, sub, color, icon }) => (
         <div className={`rounded-2xl p-4 text-white ${color} shadow-md`}>
@@ -741,7 +742,6 @@ const AnalyticsView = ({ decks, sessionLogs, navigate }) => {
                 leftAction={<button onClick={() => navigate('dashboard')} className="p-1 text-gray-600"><IconBack /></button>}
             />
             <div className="p-4 space-y-5">
-                {/* Streak */}
                 <div className="bg-gradient-to-r from-orange-400 to-pink-500 rounded-3xl p-5 text-white shadow-xl text-center">
                     <div className="streak-fire">🔥</div>
                     <div className="text-5xl font-black mt-1">{streak}</div>
@@ -749,15 +749,13 @@ const AnalyticsView = ({ decks, sessionLogs, navigate }) => {
                     <div className="text-sm opacity-75 mt-1">{streak === 0 ? 'Học ngay để bắt đầu streak!' : streak >= 7 ? 'Tuyệt vời! Giữ vững nhé!' : 'Cố lên, đừng để streak bị đứt!'}</div>
                 </div>
 
-                {/* Stats grid */}
                 <div className="grid grid-cols-2 gap-3">
-                    <StatCard label="Thẻ đã tạo" value={decks.length} icon="🎴" color="bg-indigo-500" />
+                    <StatCard label="Thẻ đã tạo" value={(decks || []).length} icon="🎴" color="bg-indigo-500" />
                     <StatCard label="Từ đã học" value={totalWords} icon="📝" color="bg-purple-500" />
                     <StatCard label="Độ chính xác" value={`${accuracy}%`} icon="🎯" color={accuracy>=80?'bg-kahoot-green':accuracy>=60?'bg-kahoot-yellow':'bg-kahoot-red'} sub="Trung bình tất cả session" />
-                    <StatCard label="Phiên học" value={sessionLogs.length} icon="🏃" color="bg-cyan-500" />
+                    <StatCard label="Phiên học" value={(sessionLogs || []).length} icon="🏃" color="bg-cyan-500" />
                 </div>
 
-                {/* Weak words */}
                 {weakWords.length > 0 && (
                     <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
                         <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
@@ -780,7 +778,6 @@ const AnalyticsView = ({ decks, sessionLogs, navigate }) => {
                     </div>
                 )}
 
-                {/* Session history */}
                 {recentSessions.length > 0 ? (
                     <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
                         <h3 className="font-bold text-gray-800 mb-3">📅 Lịch sử học gần đây</h3>
@@ -818,11 +815,17 @@ const SettingsView = ({ settings, updateSettings, navigate, user, onGoogleLogin,
     const [fbKey, setFbKey] = useState(settings.fbApiKey || '');
     const [fbProject, setFbProject] = useState(settings.fbProjectId || '');
     const [fbAppId, setFbAppId] = useState(settings.fbAppId || '');
+    const [fbDbUrl, setFbDbUrl] = useState(settings.fbDatabaseUrl || '');
     const [showFbGuide, setShowFbGuide] = useState(false);
 
     const saveFbConfig = () => {
-        updateSettings({ fbApiKey: fbKey.trim(), fbProjectId: fbProject.trim(), fbAppId: fbAppId.trim() });
-        alert('Đã lưu cấu hình Firebase. Hãy đăng nhập lại nếu cần.');
+        updateSettings({
+            fbApiKey: fbKey.trim(),
+            fbProjectId: fbProject.trim(),
+            fbAppId: fbAppId.trim(),
+            fbDatabaseUrl: fbDbUrl.trim()
+        });
+        alert('Đã lưu cấu hình Firebase Realtime Database. Hãy đăng nhập lại nếu cần.');
     };
 
     return (
@@ -830,7 +833,6 @@ const SettingsView = ({ settings, updateSettings, navigate, user, onGoogleLogin,
             <Header title="Cài đặt" leftAction={<button onClick={() => navigate('dashboard')} className="p-1 text-gray-600"><IconBack /></button>} />
             <div className="p-4 space-y-4">
 
-                {/* Gemini API */}
                 <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
                     <h3 className="font-bold text-gray-800 mb-1 flex items-center gap-2">🤖 Gemini AI</h3>
                     <p className="text-xs text-gray-500 mb-3">Mỗi thiết bị cần nhập riêng. Lấy key miễn phí tại <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline">aistudio.google.com</a></p>
@@ -840,22 +842,32 @@ const SettingsView = ({ settings, updateSettings, navigate, user, onGoogleLogin,
                         placeholder="AIzaSy..." />
                 </div>
 
-                {/* Firebase Cloud Sync */}
                 <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
                     <div className="flex items-center justify-between mb-1">
-                        <h3 className="font-bold text-gray-800 flex items-center gap-2"><IconCloud /> Cloud Sync (Firebase)</h3>
+                        <h3 className="font-bold text-gray-800 flex items-center gap-2"><IconCloud /> Realtime Cloud Sync (Firebase)</h3>
                         <button onClick={() => setShowFbGuide(g => !g)} className="text-xs text-indigo-600 font-semibold underline">Hướng dẫn</button>
                     </div>
-                    <p className="text-xs text-gray-500 mb-3">Đồng bộ dữ liệu PC ↔ Điện thoại qua Google Account.</p>
+                    <p className="text-xs text-gray-500 mb-3">Đồng bộ dữ liệu PC ↔ Điện thoại trực tiếp qua Firebase Realtime Database.</p>
 
                     {showFbGuide && (
                         <div className="mb-4 bg-indigo-50 rounded-xl p-3 text-xs text-indigo-800 space-y-1">
-                            <p className="font-bold">📋 Hướng dẫn tạo Firebase miễn phí:</p>
-                            <p>1. Vào <strong>console.firebase.google.com</strong> → Tạo project mới</p>
-                            <p>2. Vào <strong>Project Settings</strong> → Thêm Web App (icon &lt;/&gt;)</p>
-                            <p>3. Copy <strong>apiKey</strong>, <strong>projectId</strong>, <strong>appId</strong> vào ô bên dưới</p>
-                            <p>4. Vào <strong>Authentication</strong> → Bật <strong>Google Sign-in</strong></p>
-                            <p>5. Vào <strong>Firestore Database</strong> → Create database (Start in test mode)</p>
+                            <p className="font-bold">📋 Hướng dẫn tạo Firebase Realtime Database:</p>
+                            <p>1. Vào <strong>console.firebase.google.com</strong> → Tạo/chọn project</p>
+                            <p>2. Vào <strong>Build → Realtime Database</strong> → Create Database</p>
+                            <p>3. Trong mục <strong>Rules</strong>, đặt cấu hình cho phép người dùng đăng nhập:</p>
+                            <pre className="bg-white p-2 rounded text-[10px] my-1 font-mono text-gray-700">
+{`{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "$uid === auth.uid",
+        ".write": "$uid === auth.uid"
+      }
+    }
+  }
+}`}
+                            </pre>
+                            <p>4. Copy URL Realtime Database (ví dụ: https://...-default-rtdb.firebaseio.com) vào ô bên dưới.</p>
                         </div>
                     )}
 
@@ -866,16 +878,17 @@ const SettingsView = ({ settings, updateSettings, navigate, user, onGoogleLogin,
                             className="w-full px-3 py-2 rounded-xl border-2 border-gray-200 focus:border-indigo-400 outline-none text-xs transition-all" />
                         <input type="text" value={fbAppId} onChange={e => setFbAppId(e.target.value)} placeholder="appId (1:123:web:abc)"
                             className="w-full px-3 py-2 rounded-xl border-2 border-gray-200 focus:border-indigo-400 outline-none text-xs transition-all" />
+                        <input type="text" value={fbDbUrl} onChange={e => setFbDbUrl(e.target.value)} placeholder="databaseURL (Tùy chọn: https://...-rtdb.firebaseio.com)"
+                            className="w-full px-3 py-2 rounded-xl border-2 border-gray-200 focus:border-indigo-400 outline-none text-xs transition-all" />
                     </div>
                     <button onClick={saveFbConfig} className="w-full py-2 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-colors mb-3">
                         💾 Lưu cấu hình Firebase
                     </button>
 
-                    {/* Auth status */}
                     {user ? (
                         <div className="flex items-center justify-between bg-green-50 rounded-xl p-3">
                             <div>
-                                <p className="text-sm font-bold text-green-700">✅ Đã đăng nhập</p>
+                                <p className="text-sm font-bold text-green-700">✅ Đã đăng nhập Realtime Sync</p>
                                 <p className="text-xs text-green-600">{user.email}</p>
                             </div>
                             <button onClick={onSignOut} className="text-xs text-red-500 font-bold underline">Đăng xuất</button>
@@ -888,10 +901,9 @@ const SettingsView = ({ settings, updateSettings, navigate, user, onGoogleLogin,
                     )}
                 </div>
 
-                {/* App info */}
                 <div className="text-center text-xs text-gray-400 pt-2">
-                    <p>VocabMaster v2.0 • Dữ liệu local lưu tự động</p>
-                    <p className="mt-1">Không kết nối Firebase → chỉ dùng LocalStorage</p>
+                    <p>VocabMaster v2.1 • Firebase Realtime Database Active</p>
+                    <p className="mt-1">Khi chưa đăng nhập → dữ liệu lưu tạm ở LocalStorage</p>
                 </div>
             </div>
         </div>
@@ -904,83 +916,136 @@ const App = () => {
     const [navParams, setNavParams] = useState({});
     const [decks, setDecks] = useState([]);
     const [sessionLogs, setSessionLogs] = useState([]);
-    const [settings, setSettings] = useState({ geminiApiKey: '', fbApiKey: '', fbProjectId: '', fbAppId: '' });
+    const [settings, setSettings] = useState({ geminiApiKey: '', fbApiKey: '', fbProjectId: '', fbAppId: '', fbDatabaseUrl: '' });
     const [user, setUser] = useState(null);
     const [isLoaded, setIsLoaded] = useState(false);
 
-    // Sync timer ref
-    const syncTimer = useRef(null);
-
-    // ---- Load from localStorage ----
+    // Load initial settings & local fallback
     useEffect(() => {
         try {
-            const d = localStorage.getItem('vocab_decks');
-            if (d) setDecks(JSON.parse(d));
             const s = localStorage.getItem('vocab_settings');
             if (s) setSettings(JSON.parse(s));
+            const d = localStorage.getItem('vocab_decks');
+            if (d) setDecks(JSON.parse(d));
             const l = localStorage.getItem('vocab_sessions');
             if (l) setSessionLogs(JSON.parse(l));
-        } catch(e) { console.error('Load error', e); }
+        } catch(e) { console.error('Load storage error', e); }
         setIsLoaded(true);
     }, []);
 
-    // ---- Save to localStorage ----
-    useEffect(() => { if (isLoaded) localStorage.setItem('vocab_decks', JSON.stringify(decks)); }, [decks, isLoaded]);
-    useEffect(() => { if (isLoaded) localStorage.setItem('vocab_settings', JSON.stringify(settings)); }, [settings, isLoaded]);
-    useEffect(() => { if (isLoaded) localStorage.setItem('vocab_sessions', JSON.stringify(sessionLogs.slice(0,100))); }, [sessionLogs, isLoaded]);
+    // Save settings
+    useEffect(() => {
+        if (isLoaded) localStorage.setItem('vocab_settings', JSON.stringify(settings));
+    }, [settings, isLoaded]);
 
-    // ---- Firebase init & auth listener ----
+    // Save local fallback when NOT logged in
+    useEffect(() => {
+        if (isLoaded && !user) {
+            localStorage.setItem('vocab_decks', JSON.stringify(decks));
+        }
+    }, [decks, isLoaded, user]);
+
+    useEffect(() => {
+        if (isLoaded && !user) {
+            localStorage.setItem('vocab_sessions', JSON.stringify(sessionLogs.slice(0, 100)));
+        }
+    }, [sessionLogs, isLoaded, user]);
+
+    // Firebase Auth & Realtime Database sync
     useEffect(() => {
         if (!isLoaded) return;
         const ok = FirebaseService.init(settings);
         if (!ok) return;
 
-        // Check for redirect result when returning from Google login
         FirebaseService.checkRedirectResult().then(u => {
             if (u) setUser(u);
         }).catch(e => {
             console.error('Redirect auth error:', e);
         });
 
-        const unsub = FirebaseService.onAuthStateChanged(async (u) => {
+        const unsubAuth = FirebaseService.onAuthStateChanged((u) => {
             setUser(u);
-            if (u) {
-                // Load cloud data
-                try {
-                    const data = await FirebaseService.loadUserData(u.uid);
-                    if (data?.decks?.length) setDecks(data.decks);
-                    if (data?.sessionLogs?.length) setSessionLogs(data.sessionLogs);
-                } catch(e) { console.error('Cloud load error', e); }
+        });
+
+        return () => {
+            if (typeof unsubAuth === 'function') unsubAuth();
+        };
+    }, [isLoaded, settings.fbApiKey, settings.fbProjectId, settings.fbAppId, settings.fbDatabaseUrl]);
+
+    // Listen to Firebase Realtime Database at path users/${user.uid}/vocabData
+    useEffect(() => {
+        if (!isLoaded || !user) return;
+        const ok = FirebaseService.init(settings);
+        if (!ok) return;
+
+        const db = FirebaseService.getDb();
+        if (!db) return;
+
+        const userVocabRef = ref(db, `users/${user.uid}/vocabData`);
+        const unsubRealtime = onValue(userVocabRef, (snapshot) => {
+            if (snapshot.exists()) {
+                const data = snapshot.val();
+                if (data) {
+                    if (data.decks) setDecks(data.decks);
+                    else setDecks([]);
+                    if (data.sessionLogs) setSessionLogs(data.sessionLogs);
+                    else setSessionLogs([]);
+                }
+            } else {
+                // If remote is empty, initialize remote with local data
+                const initialPayload = {
+                    decks: decks,
+                    sessionLogs: sessionLogs,
+                    updatedAt: Date.now()
+                };
+                set(userVocabRef, initialPayload);
             }
         });
-        return () => { if (typeof unsub === 'function') unsub(); };
-    }, [isLoaded, settings.fbApiKey, settings.fbProjectId, settings.fbAppId]);
 
-    // ---- Debounced cloud sync ----
-    const syncToCloud = useCallback((d, logs) => {
-        if (!user) return;
-        clearTimeout(syncTimer.current);
-        syncTimer.current = setTimeout(async () => {
-            try {
-                await FirebaseService.saveUserData(user.uid, {
-                    decks: d,
-                    sessionLogs: logs.slice(0, 100),
+        return () => {
+            if (typeof unsubRealtime === 'function') unsubRealtime();
+        };
+    }, [user, isLoaded, settings.fbApiKey, settings.fbProjectId, settings.fbAppId, settings.fbDatabaseUrl]);
+
+    // Save helper to push updates directly to Realtime Database or LocalStorage
+    const saveDecksData = (newDecks, newLogs = sessionLogs) => {
+        setDecks(newDecks);
+        if (user) {
+            const db = FirebaseService.getDb();
+            if (db) {
+                const userVocabRef = ref(db, `users/${user.uid}/vocabData`);
+                set(userVocabRef, {
+                    decks: newDecks,
+                    sessionLogs: newLogs,
                     updatedAt: Date.now()
                 });
-            } catch(e) { console.error('Cloud sync error', e); }
-        }, 2000);
-    }, [user]);
+            }
+        }
+    };
 
-    useEffect(() => { if (isLoaded && user) syncToCloud(decks, sessionLogs); }, [decks, sessionLogs, user]);
+    const saveLogsData = (newLogs, currentDecks = decks) => {
+        setSessionLogs(newLogs);
+        if (user) {
+            const db = FirebaseService.getDb();
+            if (db) {
+                const userVocabRef = ref(db, `users/${user.uid}/vocabData`);
+                set(userVocabRef, {
+                    decks: currentDecks,
+                    sessionLogs: newLogs,
+                    updatedAt: Date.now()
+                });
+            }
+        }
+    };
 
-    // ---- Navigation ----
+    // Navigation
     const navigate = (view, params = {}) => {
         setNavParams(params);
         setCurrentView(view);
         window.scrollTo(0, 0);
     };
 
-    // ---- Deck actions ----
+    // Deck actions
     const openTodayDeck = () => {
         const dateStr = new Date().toLocaleDateString('vi-VN');
         const existing = decks.find(d => {
@@ -989,34 +1054,39 @@ const App = () => {
         });
         if (existing) { navigate('editor', { deckId: existing.id }); return; }
         const newDeck = { id: generateId(), title: `Deck ${dateStr}`, dateCreated: Date.now(), words: [] };
-        setDecks(prev => [newDeck, ...prev]);
+        const newDecks = [newDeck, ...decks];
+        saveDecksData(newDecks);
         navigate('editor', { deckId: newDeck.id });
     };
 
     const createCustomDeck = () => {
         const newDeck = { id: generateId(), title: 'New Custom Deck', dateCreated: Date.now(), words: [] };
-        setDecks(prev => [newDeck, ...prev]);
+        const newDecks = [newDeck, ...decks];
+        saveDecksData(newDecks);
         navigate('editor', { deckId: newDeck.id });
     };
 
     const updateDeck = (deckId, updates) => {
-        setDecks(prev => prev.map(d => d.id === deckId ? { ...d, ...updates } : d));
+        const newDecks = decks.map(d => d.id === deckId ? { ...d, ...updates } : d);
+        saveDecksData(newDecks);
     };
 
     const deleteDeck = (deckId) => {
         if (confirm('Bạn có chắc muốn xóa thẻ này không?')) {
-            setDecks(prev => prev.filter(d => d.id !== deckId));
+            const newDecks = decks.filter(d => d.id !== deckId);
+            saveDecksData(newDecks);
         }
     };
 
     const updateSettings = (updates) => setSettings(prev => ({ ...prev, ...updates }));
 
-    // ---- Analytics: on quiz complete ----
+    // Quiz completion
     const handleQuizComplete = (data) => {
-        setSessionLogs(prev => [{ id: generateId(), date: Date.now(), ...data }, ...prev].slice(0, 100));
+        const newLogs = [{ id: generateId(), date: Date.now(), ...data }, ...sessionLogs].slice(0, 100);
+        saveLogsData(newLogs);
     };
 
-    // ---- Firebase auth ----
+    // Firebase Auth
     const handleGoogleLogin = async () => {
         const ok = FirebaseService.init(settings);
         if (!ok) { alert('Hãy nhập đầy đủ Firebase config trong Settings trước.'); return; }
