@@ -162,7 +162,7 @@ Return ONLY a valid JSON object:
   "distractors": ["string","string","string"] (3 wrong answers in the EXACT same format as translation),
   "contextSentence": "string (a natural English sentence using the corrected word)"
 }`;
-                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${settings.geminiApiKey.trim()}`, {
+                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${settings.geminiApiKey.trim()}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
