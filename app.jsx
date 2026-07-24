@@ -91,10 +91,15 @@ const FirebaseService = {
     },
 
     async signInWithGoogle() {
-        if (!this._auth) return null;
+        if (!this._auth) return;
         const provider = new firebase.auth.GoogleAuthProvider();
-        const result = await this._auth.signInWithPopup(provider);
-        return result.user;
+        await this._auth.signInWithRedirect(provider);
+    },
+
+    async checkRedirectResult() {
+        if (!this._auth) return null;
+        const result = await this._auth.getRedirectResult();
+        return result ? result.user : null;
     },
 
     async signOut() {
@@ -130,8 +135,8 @@ const ApiService = {
             const rand = Math.random();
             let fmt;
             if (rand < 0.2) fmt = "ALL common Vietnamese translations separated by comma (e.g. đặt hàng, ra lệnh)";
-            else if (rand < 0.6) fmt = "[ALL common Vietnamese translations] - [A clear English definition/explanation]";
-            else fmt = "[ALL common Vietnamese translations] - Synonyms: [1-2 English synonyms]";
+            else if (rand < 0.6) fmt = "ALL common Vietnamese translations - A clear English definition/explanation";
+            else fmt = "ALL common Vietnamese translations - Synonyms: 1-2 English synonyms";
 
             const prompt = `You are an expert English teacher. Analyze the word "${word}".
 Return ONLY a valid JSON object:
@@ -162,12 +167,19 @@ Return ONLY a valid JSON object:
             if (parsed.isCorrectSpelling === false && parsed.correctedWord) {
                 setTimeout(() => alert(`⚠️ Từ "${word}" có vẻ sai chính tả. Đã sửa thành "${parsed.correctedWord}".`), 100);
             }
+
+            const cleanStr = (val) => {
+                if (!val) return '';
+                let str = Array.isArray(val) ? val.join(', ') : String(val);
+                return str.replace(/[\[\]]/g, '').replace(/^["']|["']$/g, '').trim();
+            };
+
             result.term = parsed.correctedWord || word;
             result.partOfSpeech = parsed.partOfSpeech || '';
             result.ipa = parsed.ipa || '';
-            result.translation = parsed.translation || '';
-            result.distractors = parsed.distractors || [];
-            result.contextSentence = parsed.contextSentence || '';
+            result.translation = cleanStr(parsed.translation);
+            result.distractors = (parsed.distractors || []).map(cleanStr);
+            result.contextSentence = cleanStr(parsed.contextSentence);
         } catch(e) {
             console.error('Gemini API error:', e);
             alert(`⚠️ Lỗi AI (${e.message}). Đã tạm thời dùng dữ liệu mẫu.`);
@@ -214,19 +226,29 @@ const computeOverallAccuracy = (sessionLogs) => {
 };
 
 // ===== QUIZ QUESTION BUILDER =====
+const cleanAnswerText = (val) => {
+    if (!val) return '';
+    let str = Array.isArray(val) ? val.join(', ') : String(val);
+    return str.replace(/[\[\]]/g, '').replace(/^["']|["']$/g, '').trim();
+};
+
 const buildQuestions = (words) => {
     const colors = ['bg-kahoot-red','bg-kahoot-blue','bg-kahoot-yellow','bg-kahoot-green'];
     const shuffled = [...words].sort(() => Math.random() - 0.5);
     return shuffled.map(word => {
-        const hasSep = word.translation?.includes(' - ');
+        const rawTrans = cleanAnswerText(word.translation);
+        const hasSep = rawTrans.includes(' - ');
         const useVi = !hasSep || Math.random() < 0.5;
-        const extract = (str) => {
-            if (!str) return str;
+        const extract = (val) => {
+            let str = cleanAnswerText(val);
+            if (!str) return '';
             const idx = str.indexOf(' - ');
-            if (idx === -1) return str;
-            return useVi ? str.substring(0, idx).trim() : str.substring(idx + 3).trim();
+            if (idx !== -1) {
+                str = useVi ? str.substring(0, idx).trim() : str.substring(idx + 3).trim();
+            }
+            return cleanAnswerText(str);
         };
-        const correct = extract(word.translation);
+        const correct = extract(rawTrans);
         let opts = [correct, ...(word.distractors||[]).slice(0,3).map(d => extract(d))];
         opts = opts.sort(() => Math.random() - 0.5);
         return {
@@ -912,6 +934,14 @@ const App = () => {
         if (!isLoaded) return;
         const ok = FirebaseService.init(settings);
         if (!ok) return;
+
+        // Check for redirect result when returning from Google login
+        FirebaseService.checkRedirectResult().then(u => {
+            if (u) setUser(u);
+        }).catch(e => {
+            console.error('Redirect auth error:', e);
+        });
+
         const unsub = FirebaseService.onAuthStateChanged(async (u) => {
             setUser(u);
             if (u) {
@@ -991,8 +1021,7 @@ const App = () => {
         const ok = FirebaseService.init(settings);
         if (!ok) { alert('Hãy nhập đầy đủ Firebase config trong Settings trước.'); return; }
         try {
-            const u = await FirebaseService.signInWithGoogle();
-            if (u) setUser(u);
+            await FirebaseService.signInWithGoogle();
         } catch(e) { alert('Đăng nhập thất bại: ' + e.message); }
     };
 
